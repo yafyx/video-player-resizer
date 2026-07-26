@@ -1,216 +1,306 @@
-import { detectVideoPlayer, observeVideoPlayers } from '../utils/videoDetector';
-import { createResizeHandles, applyDimensions, resetDimensions } from '../utils/resize';
+import {
+  observeVideoPlayers,
+  findPlayers,
+  isPlayerCandidate,
+  describePlayer,
+} from '../utils/videoDetector';
+import type { DetectedPlayer } from '../utils/videoDetector';
+import { createResizeOverlay } from '../utils/resize';
+import type { ResizeOverlay } from '../utils/resize';
 import {
   loadSettingsForSite,
   setSettings,
-  getSettings,
+  setSiteEnabled,
   persistDimensions,
-  setSiteDisabled,
+  clearDimensions,
   watchStorage,
 } from '../utils/storage';
-import type { DetectedPlayer } from '../utils/videoDetector';
-import type { ExtensionSettings } from '../utils/storage';
+import type {
+  ExtensionSettings,
+  SiteActivation,
+  SiteOverrides,
+  StoredDimensions,
+} from '../utils/storage';
+import type { ContentRequest, PlayerState } from '../utils/messages';
+import { DEFAULT_SETTINGS, STORAGE_KEYS } from '../utils/constants';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
-  cssInjectionMode: 'ui',
-  async main(ctx) {
-    let currentPlayer: DetectedPlayer | null = null;
-    let currentSettings: ExtensionSettings = { enabled: true, lockAspectRatio: false };
-    let resizeControls: { remove: () => void; update: (s: ExtensionSettings) => void } | null = null;
-    let disconnected = false;
-    let persistedDimensions: { width: number; height: number } | null = null;
+  runAt: 'document_idle',
+  allFrames: false,
 
+  main(ctx) {
     const hostname = window.location.hostname;
 
-    // ---- Load initial settings ----
-    async function refreshSettings() {
-      const data = await loadSettingsForSite(hostname);
-      currentSettings = {
-        ...data.settings,
-        enabled: data.settings.enabled && !data.disabled,
-      };
-      persistedDimensions = data.persistedDimensions;
-    }
+    let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
+    let activation: SiteActivation = { active: true, byDefault: false };
+    let persisted: StoredDimensions | null = null;
+    let overlay: ResizeOverlay | null = null;
+    let watcher: ReturnType<typeof observeVideoPlayers> | null = null;
+    let playerCount = 0;
+    let torn = false;
 
-    await refreshSettings();
+    /** The global switch and the per-site decision both have to be on. */
+    const active = () => settings.enabled && activation.active;
 
-    // ---- Player detection + mount ----
-    function mountHandles(player: DetectedPlayer) {
-      if (disconnected || !currentSettings.enabled) return;
+    // ---- Overlay lifecycle -------------------------------------------------
 
-      if (resizeControls) {
-        resizeControls.remove();
-        resizeControls = null;
-      }
+    function ensureOverlay(): ResizeOverlay {
+      if (overlay) return overlay;
 
-      // Apply persisted dimensions if available
-      if (persistedDimensions) {
-        applyDimensions(player.element, persistedDimensions.width, persistedDimensions.height);
-      }
-
-      resizeControls = createResizeHandles(
-        ctx,
-        player.element,
-        player.naturalWidth,
-        player.naturalHeight,
-        currentSettings,
-        (w, h) => {
-          persistDimensions(hostname, { width: w, height: h });
+      overlay = createResizeOverlay(
+        { lockAspectRatio: settings.lockAspectRatio, allowOverflow: settings.allowOverflow },
+        {
+          onCommit(width, height) {
+            if (!settings.rememberSize) return;
+            persisted = { width, height };
+            void persistDimensions(hostname, persisted);
+          },
+          onReset() {
+            persisted = null;
+            void clearDimensions(hostname);
+          },
         },
       );
 
-      currentPlayer = player;
+      return overlay;
     }
 
-    function unmountHandles() {
-      if (resizeControls) {
-        resizeControls.remove();
-        resizeControls = null;
+    function mount(player: DetectedPlayer): void {
+      if (torn || !active()) return;
+      const view = ensureOverlay();
+      view.attach(player);
+
+      // Only re-apply a remembered size to a player we have not touched yet.
+      if (settings.rememberSize && persisted && !view.isResized()) {
+        view.setSize(persisted.width, persisted.height);
       }
-      if (currentPlayer) {
-        resetDimensions(currentPlayer.element);
-      }
-      currentPlayer = null;
     }
 
-    async function enableForSite() {
-      currentSettings.enabled = true;
-      await setSiteDisabled(hostname, false);
-      await refreshSettings();
-      if (currentPlayer) {
-        mountHandles(currentPlayer);
+    function teardown(restore: boolean): void {
+      if (!overlay) return;
+      if (restore) overlay.restoreAll();
+      overlay.detach();
+    }
+
+    // ---- Detection ---------------------------------------------------------
+
+    function startWatching(): void {
+      if (watcher) return;
+      watcher = observeVideoPlayers({
+        onChange(player) {
+          playerCount = findPlayers().length;
+          mount(player);
+        },
+        onLost() {
+          playerCount = 0;
+          teardown(false);
+        },
+      });
+    }
+
+    function stopWatching(): void {
+      watcher?.stop();
+      watcher = null;
+    }
+
+    /**
+     * With several videos on a page, whichever one the pointer is over is the one
+     * the user means. Scoring alone would keep the overlay pinned to the largest.
+     */
+    function onPointerOver(event: PointerEvent): void {
+      if (!active() || !watcher) return;
+      const node = event.target;
+      if (!(node instanceof Element)) return;
+
+      const media = node.closest('video, iframe') as HTMLElement | null;
+      if (!media || media === watcher.current()?.core) return;
+      if (!isPlayerCandidate(media)) return;
+
+      watcher.select(media);
+    }
+
+    ctx.addEventListener(document, 'pointerover', onPointerOver, { capture: true });
+
+    // ---- Boot --------------------------------------------------------------
+
+    async function refresh(): Promise<void> {
+      const state = await loadSettingsForSite(hostname);
+      settings = state.settings;
+      activation = state.activation;
+      persisted = state.persistedDimensions;
+      overlay?.updateSettings({
+        lockAspectRatio: settings.lockAspectRatio,
+        allowOverflow: settings.allowOverflow,
+      });
+    }
+
+    function applyActivation(): void {
+      if (active()) {
+        startWatching();
+        watcher?.recheck();
       } else {
-        tryDetect();
+        stopWatching();
+        teardown(true);
       }
     }
 
-    async function disableForSite() {
-      currentSettings.enabled = false;
-      await setSiteDisabled(hostname, true);
-      await refreshSettings();
-      unmountHandles();
-    }
+    void refresh().then(applyActivation);
 
-    function tryDetect() {
-      const player = detectVideoPlayer();
-      if (player) {
-        currentPlayer = player;
-        mountHandles(player);
-      }
-    }
+    // ---- SPA navigation ----------------------------------------------------
 
-    tryDetect();
-
-    // ---- SPA navigation handling ----
-    ctx.addEventListener(window, 'wxt:locationchange', async () => {
-      unmountHandles();
-      await refreshSettings();
-      tryDetect();
+    ctx.addEventListener(window, 'wxt:locationchange', () => {
+      teardown(false);
+      void refresh().then(() => {
+        stopWatching();
+        // A route change can swap the palette out from under us.
+        overlay?.refreshTheme();
+        applyActivation();
+      });
     });
 
-    // ---- DOM mutation observer for dynamically-added players ----
-    const stopObserving = observeVideoPlayers((player) => {
-      if (!currentPlayer || player.element !== currentPlayer.element) {
-        unmountHandles();
-        currentPlayer = player;
-        mountHandles(player);
-      }
+    // ---- Storage sync (popup and other tabs) -------------------------------
+
+    const unwatchSettings = watchStorage<ExtensionSettings>('sync', 'settings', () => {
+      void refresh().then(applyActivation);
     });
 
-    // ---- Reactive storage watchers ----
-    const unwatchSettings = watchStorage<ExtensionSettings>('sync', 'settings', (newVal) => {
-      if (newVal) {
-        currentSettings = { ...newVal, enabled: newVal.enabled };
-        if (resizeControls) {
-          resizeControls.update(currentSettings);
-        }
-      }
-    });
-
-    const unwatchDimensions = watchStorage<Record<string, { width: number; height: number }>>(
-      'local', 'siteDimensions', async () => {
-        const data = await loadSettingsForSite(hostname);
-        if (data.persistedDimensions && currentPlayer) {
-          applyDimensions(currentPlayer.element, data.persistedDimensions.width, data.persistedDimensions.height);
-        }
+    const unwatchOverrides = watchStorage<SiteOverrides>(
+      'local',
+      STORAGE_KEYS.PER_SITE_OVERRIDES,
+      () => {
+        void refresh().then(applyActivation);
       },
     );
 
-    const unwatchDisabled = watchStorage<Record<string, boolean>>('local', 'perSiteDisabled', async () => {
-      await refreshSettings();
-      if (!currentSettings.enabled && resizeControls) {
-        unmountHandles();
-      } else if (currentSettings.enabled && !resizeControls) {
-        tryDetect();
-      }
-    });
+    // ---- Popup messaging ---------------------------------------------------
 
-    // ---- Popup messaging ----
-    browser.runtime.onMessage.addListener(
-      (message: any, _sender: browser.runtime.MessageSender) => {
-        if (message?.type === 'getState') {
-          const el = currentPlayer?.element;
-          return Promise.resolve({
-            type: 'state',
-            playerDetected: !!currentPlayer,
-            currentWidth: el?.offsetWidth ?? 0,
-            currentHeight: el?.offsetHeight ?? 0,
-            naturalWidth: currentPlayer?.naturalWidth ?? 0,
-            naturalHeight: currentPlayer?.naturalHeight ?? 0,
-            enabled: currentSettings.enabled,
-            lockAspectRatio: currentSettings.lockAspectRatio,
+    function snapshot(): PlayerState {
+      const player = overlay?.getPlayer() ?? watcher?.current() ?? null;
+      const size = overlay?.getSize() ?? null;
+
+      return {
+        type: 'state',
+        playerDetected: !!player,
+        playerCount,
+        playerKind: player?.kind ?? null,
+        isResized: overlay?.isResized() ?? false,
+        currentWidth: size?.width ?? player?.naturalWidth ?? 0,
+        currentHeight: size?.height ?? player?.naturalHeight ?? 0,
+        naturalWidth: player?.naturalWidth ?? 0,
+        naturalHeight: player?.naturalHeight ?? 0,
+        settings,
+        activeHere: activation.active,
+        offByDefault: activation.byDefault,
+        hostname,
+      };
+    }
+
+    async function handle(message: ContentRequest): Promise<PlayerState> {
+      switch (message.type) {
+        case 'setEnabled': {
+          await setSiteEnabled(hostname, message.value);
+          await refresh();
+          applyActivation();
+          break;
+        }
+
+        case 'setSetting': {
+          const patch: Partial<ExtensionSettings> = {};
+          patch[message.key] = message.value;
+          settings = await setSettings(patch);
+          overlay?.updateSettings({
+            lockAspectRatio: settings.lockAspectRatio,
+            allowOverflow: settings.allowOverflow,
           });
+          if (message.key === 'enabled') applyActivation();
+          break;
         }
 
-        if (message?.type === 'toggleEnabled') {
-          if (currentSettings.enabled) {
-            return disableForSite().then(() => ({ type: 'toggled', enabled: false }));
-          } else {
-            return enableForSite().then(() => ({ type: 'toggled', enabled: true }));
-          }
-        }
-
-        if (message?.type === 'toggleAspectRatio') {
-          currentSettings.lockAspectRatio = !currentSettings.lockAspectRatio;
-          return setSettings({ ...currentSettings }).then(() => {
-            if (resizeControls) {
-              resizeControls.update(currentSettings);
+        case 'applyPreset': {
+          const player = overlay?.getPlayer();
+          if (player && overlay) {
+            const width = Math.round(player.naturalWidth * message.scale);
+            const height = Math.round(player.naturalHeight * message.scale);
+            overlay.setSize(width, height);
+            if (settings.rememberSize) {
+              persisted = { width, height };
+              await persistDimensions(hostname, persisted);
             }
-            return { type: 'aspectRatioToggled', lockAspectRatio: currentSettings.lockAspectRatio };
-          });
+          }
+          break;
         }
 
-        if (message?.type === 'applyPreset' && currentPlayer) {
-          const scale = message.scale as number;
-          const w = Math.round(currentPlayer.naturalWidth * scale);
-          const h = Math.round(currentPlayer.naturalHeight * scale);
-          applyDimensions(currentPlayer.element, w, h);
-          return persistDimensions(hostname, { width: w, height: h }).then(() => ({
-            type: 'presetApplied', width: w, height: h,
-          }));
+        case 'setSize': {
+          if (overlay) {
+            overlay.setSize(message.width, message.height);
+            if (settings.rememberSize) {
+              persisted = { width: message.width, height: message.height };
+              await persistDimensions(hostname, persisted);
+            }
+          }
+          break;
         }
 
-        if (message?.type === 'resetSize' && currentPlayer) {
-          resetDimensions(currentPlayer.element);
-          return persistDimensions(hostname, {
-            width: currentPlayer.naturalWidth,
-            height: currentPlayer.naturalHeight,
-          }).then(() => ({ type: 'sizeReset' }));
+        case 'resetSize': {
+          overlay?.resetSize();
+          break;
         }
 
-        return Promise.resolve(null);
-      },
-    );
+        case 'cyclePlayer': {
+          const players = findPlayers();
+          playerCount = players.length;
+          if (players.length > 1 && watcher) {
+            const currentCore = watcher.current()?.core;
+            const index = players.findIndex((p) => p.core === currentCore);
+            const next = players[(index + 1) % players.length];
+            watcher.select(next.core);
+          }
+          break;
+        }
 
-    // ---- Cleanup on invalidate ----
+        case 'getState':
+        default:
+          playerCount = findPlayers().length;
+          break;
+      }
+
+      return snapshot();
+    }
+
+    // `sendResponse` + `return true` is the one shape that works on both the
+    // promise-based polyfill and raw MV3 `chrome.runtime`.
+    const onMessage = (
+      message: ContentRequest,
+      _sender: unknown,
+      sendResponse: (response: PlayerState) => void,
+    ): true => {
+      handle(message).then(sendResponse, () => sendResponse(snapshot()));
+      return true;
+    };
+
+    browser.runtime.onMessage.addListener(onMessage);
+
+    // ---- Cleanup -----------------------------------------------------------
+
     ctx.onInvalidated(() => {
-      disconnected = true;
-      stopObserving();
+      torn = true;
+      stopWatching();
       unwatchSettings();
-      unwatchDimensions();
-      unwatchDisabled();
-      unmountHandles();
+      unwatchOverrides();
+      overlay?.destroy();
+      overlay = null;
+      browser.runtime.onMessage.removeListener(onMessage);
     });
+
+    // Re-describe the active player after late layout shifts (fonts, lazy images)
+    // so the natural size we remember is the settled one.
+    const settleTimer = setTimeout(() => {
+      const current = watcher?.current();
+      if (current && active() && !overlay?.isResized()) {
+        mount(describePlayer(current.core));
+      }
+    }, 1200);
+    ctx.onInvalidated(() => clearTimeout(settleTimer));
   },
 });
