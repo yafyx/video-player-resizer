@@ -1,141 +1,237 @@
-import { useState, useEffect, useCallback } from 'react';
-import { SIZE_PRESETS } from '../../utils/constants';
+import { useCallback, useEffect, useState } from 'react';
+import { SIZE_PRESETS, DEFAULT_SETTINGS } from '../../utils/constants';
+import type { ContentRequest, PlayerState } from '../../utils/messages';
+import type { ExtensionSettings } from '../../utils/storage';
 import './App.css';
 
-interface PlayerState {
-  playerDetected: boolean;
-  currentWidth: number;
-  currentHeight: number;
-  naturalWidth: number;
-  naturalHeight: number;
-  enabled: boolean;
-  lockAspectRatio: boolean;
+/** `unreachable` covers restricted pages and tabs older than the current build. */
+type Connection =
+  | { status: 'loading' }
+  | { status: 'ready'; state: PlayerState }
+  | { status: 'unreachable'; hostname: string };
+
+async function activeTab(): Promise<{ id: number; hostname: string } | null> {
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return null;
+
+  let hostname = '';
+  try {
+    hostname = tab.url ? new URL(tab.url).hostname : '';
+  } catch {
+    hostname = '';
+  }
+  return { id: tab.id, hostname };
+}
+
+function Toggle({
+  on,
+  label,
+  onChange,
+}: {
+  on: boolean;
+  label: string;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="toggle"
+      data-on={on}
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => onChange(!on)}
+    />
+  );
+}
+
+function SettingRow({
+  title,
+  description,
+  on,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  on: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="row">
+      <span className="row-label">
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </span>
+      <Toggle on={on} label={title} onChange={onChange} />
+    </div>
+  );
+}
+
+/**
+ * Sites with their own player sizing ship switched off, so the row has to say
+ * that plainly -- an off toggle with no explanation reads as a bug.
+ */
+function siteRowDescription(state: PlayerState, live: boolean): string {
+  if (state.offByDefault && !state.activeHere) {
+    return `Off by default here — ${state.hostname} has its own player controls`;
+  }
+  if (!live) return 'Turn on to add drag handles to the player';
+  if (state.playerCount > 1) {
+    return `${state.playerCount} players detected — hover one to target it`;
+  }
+  return 'Adds drag handles to the player';
 }
 
 function App() {
-  const [state, setState] = useState<PlayerState | null>(null);
+  const [connection, setConnection] = useState<Connection>({ status: 'loading' });
 
-  const queryState = useCallback(() => {
-    browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-      const tabId = tabs[0]?.id;
-      if (!tabId) return;
-      browser.tabs.sendMessage(tabId, { type: 'getState' }).then((resp: any) => {
-        if (resp?.type === 'state') {
-          setState(resp);
-        }
-      }).catch(() => {
-        // Content script not loaded on this page
-        setState(null);
-      });
-    });
+  const send = useCallback(async (message: ContentRequest) => {
+    const tab = await activeTab();
+    if (!tab) return;
+
+    try {
+      const response = (await browser.tabs.sendMessage(tab.id, message)) as PlayerState | undefined;
+      if (response?.type === 'state') {
+        setConnection({ status: 'ready', state: response });
+        return;
+      }
+      setConnection({ status: 'unreachable', hostname: tab.hostname });
+    } catch {
+      // No content script in this tab: a restricted page, or the tab predates
+      // the extension being installed or reloaded.
+      setConnection({ status: 'unreachable', hostname: tab.hostname });
+    }
   }, []);
 
   useEffect(() => {
-    queryState();
-  }, [queryState]);
+    void send({ type: 'getState' });
+  }, [send]);
 
-  const sendMessage = useCallback(
-    (msg: any) => {
-      browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-        const tabId = tabs[0]?.id;
-        if (!tabId) return;
-        browser.tabs.sendMessage(tabId, msg).then((resp: any) => {
-          if (resp?.type === 'state' || resp?.type === 'toggled' || resp?.type === 'aspectRatioToggled') {
-            queryState();
-          }
-          if (resp?.type === 'presetApplied' || resp?.type === 'sizeReset') {
-            queryState();
-          }
-        }).catch(() => {});
-      });
-    },
-    [queryState],
-  );
+  if (connection.status === 'loading') {
+    return <div className="popup" />;
+  }
 
-  const handleToggleEnabled = () => sendMessage({ type: 'toggleEnabled' });
-  const handleToggleAspectRatio = () => sendMessage({ type: 'toggleAspectRatio' });
-  const handlePreset = (scale: number) => sendMessage({ type: 'applyPreset', scale });
-  const handleReset = () => sendMessage({ type: 'resetSize' });
+  if (connection.status === 'unreachable') {
+    return (
+      <div className="popup">
+        <div className="section header">
+          <span>
+            <span className="title">Video Resizer</span>
+            <span className="host">{connection.hostname || 'this page'}</span>
+          </span>
+        </div>
+        <div className="section empty">
+          <strong>Not running here</strong>
+          Reload the page to activate it. Browser settings pages and the extension gallery are
+          always off limits.
+        </div>
+      </div>
+    );
+  }
 
-  const detected = state?.playerDetected ?? false;
-  const enabled = state?.enabled ?? true;
-  const lockRatio = state?.lockAspectRatio ?? false;
+  const state = connection.state;
+  const settings: ExtensionSettings = state.settings ?? { ...DEFAULT_SETTINGS };
+  const live = state.activeHere && settings.enabled;
+  const detected = state.playerDetected;
+  const currentScale =
+    state.naturalWidth > 0 ? state.currentWidth / state.naturalWidth : 1;
+
+  const setSetting = (key: keyof ExtensionSettings, value: boolean) =>
+    void send({ type: 'setSetting', key, value });
 
   return (
     <div className="popup">
-      {/* Header */}
-      <div className="header">
-        <h1>Video Resizer</h1>
-        <span className={detected ? 'detected' : 'not-detected'} style={{ fontSize: 12 }}>
-          {detected ? 'Player detected' : 'No player found'}
+      <div className="section header">
+        <span>
+          <span className="title">Video Resizer</span>
+          <span className="host">{state.hostname}</span>
+        </span>
+        <span className="status" data-on={live && detected}>
+          <span className="dot" />
+          {!live ? 'Off' : detected ? 'Player found' : 'No player'}
         </span>
       </div>
 
-      <hr className="divider" />
-
-      {/* Enable toggle */}
-      <div className="toggle-row">
-        <span className="toggle-label">Enabled on this site</span>
-        <button
-          className={`toggle ${enabled ? 'active' : ''}`}
-          onClick={handleToggleEnabled}
-          aria-label="Toggle extension on this site"
+      <div className="section card">
+        <SettingRow
+          title="Resize on this site"
+          description={siteRowDescription(state, live)}
+          on={live}
+          onChange={(value) => void send({ type: 'setEnabled', value })}
         />
       </div>
 
-      {/* Aspect ratio lock */}
-      <div className="toggle-row">
-        <span className="toggle-label">Lock aspect ratio</span>
-        <button
-          className={`toggle ${lockRatio ? 'active' : ''}`}
-          onClick={handleToggleAspectRatio}
-          aria-label="Toggle aspect ratio lock"
-        />
-      </div>
-
-      {/* Size presets */}
-      {detected && enabled && (
+      {live && detected && (
         <>
-          <hr className="divider" />
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Quick sizes:</div>
-          <div className="presets">
+          <div className="section readout">
+            <span className="size">
+              {state.currentWidth}
+              <span className="times">×</span>
+              {state.currentHeight}
+            </span>
+            <span className="natural">
+              was {state.naturalWidth} × {state.naturalHeight}
+            </span>
+          </div>
+
+          <div className="section presets" role="group" aria-label="Size presets">
             {SIZE_PRESETS.map((preset) => (
               <button
                 key={preset.scale}
-                className="preset-btn"
-                onClick={() => handlePreset(preset.scale)}
+                type="button"
+                className="preset"
+                data-current={Math.abs(currentScale - preset.scale) < 0.02}
+                onClick={() => void send({ type: 'applyPreset', scale: preset.scale })}
               >
                 {preset.label}
               </button>
             ))}
           </div>
-          <button className="reset-link" onClick={handleReset}>
+
+          <button
+            type="button"
+            className="section reset"
+            disabled={!state.isResized}
+            onClick={() => void send({ type: 'resetSize' })}
+          >
             Reset to original size
           </button>
         </>
       )}
 
-      {/* Status info */}
-      <hr className="divider" />
-      <div className="status">
-        {detected && state ? (
-          <>
-            <span className="detected">Player active</span>
-            <div className="status-row">
-              <span>
-                {state.currentWidth} x {state.currentHeight} px
-              </span>
-              <span>
-                Natural: {state.naturalWidth} x {state.naturalHeight}
-              </span>
-            </div>
-          </>
-        ) : (
-          <span className="not-detected">
-            Open a page with a video player to resize it.
-          </span>
-        )}
+      {live && !detected && (
+        <div className="section empty">
+          <strong>No video on this page</strong>
+          Start a video, or scroll it into view, and reopen this popup.
+        </div>
+      )}
+
+      <div className="section card">
+        <SettingRow
+          title="Lock aspect ratio"
+          description="Hold Shift while dragging to invert this"
+          on={settings.lockAspectRatio}
+          onChange={(value) => setSetting('lockAspectRatio', value)}
+        />
+        <SettingRow
+          title="Allow overflow"
+          description="Let the player grow past a narrow column"
+          on={settings.allowOverflow}
+          onChange={(value) => setSetting('allowOverflow', value)}
+        />
+        <SettingRow
+          title="Remember size"
+          description="Re-apply this size next time you visit"
+          on={settings.rememberSize}
+          onChange={(value) => setSetting('rememberSize', value)}
+        />
       </div>
+
+      <p className="section hint">
+        Hover the player to reveal its handles. <kbd>Shift</kbd> inverts the aspect lock,{' '}
+        <kbd>Alt</kbd> disables snapping, <kbd>Esc</kbd> cancels a drag. Focus a handle and use the
+        arrow keys for pixel-level control.
+      </p>
     </div>
   );
 }
