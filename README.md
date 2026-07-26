@@ -52,18 +52,13 @@ while lightness is pulled into a legible band and chroma is floored so a muted
 brand doesn't read as grey. Chroma-only gamut clamping keeps the hue intact on
 the way back to sRGB.
 
-## Where it stays out of the way
+## Off until you ask for it
 
-Video services with their own sizing controls (YouTube, Netflix, Twitch, …),
-social feeds, and video-call apps ship switched **off** — a second resize
-affordance competing with YouTube's theatre mode is noise, and a frame chasing
-the pointer down an autoplaying timeline is worse. The list is
-`DEFAULT_OFF_HOSTS` in [utils/constants.ts](utils/constants.ts) and matching
-covers subdomains.
-
-The per-site toggle overrides it in either direction and is stored as a
-tri-state, so a site added to or removed from that list later still behaves
-correctly for anyone who never expressed a preference.
+Resize ships switched **off** on every site. Hovering a player does nothing
+until you flip the popup's "Resize on this site" toggle on for that host —
+after that it stays on there. That also keeps it out of the way on sites with
+their own sizing controls (YouTube, Netflix, Twitch, …) and on feeds and
+video calls, without needing a special case for any of them.
 
 ## Using it
 

@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, DEFAULT_OFF_HOSTS, STORAGE_KEYS } from './constants';
+import { DEFAULT_SETTINGS, STORAGE_KEYS } from './constants';
 
 export interface ExtensionSettings {
   enabled: boolean;
@@ -54,27 +54,13 @@ export function getSiteKey(hostname: string): string {
   return hostname.replace(/^www\./, '').toLowerCase();
 }
 
-/**
- * Subdomain-aware: `youtube.com` in the list also covers `m.youtube.com`, but
- * never `notyoutube.com`.
- */
-export function isDefaultOffHost(hostname: string): boolean {
-  const host = getSiteKey(hostname);
-  return DEFAULT_OFF_HOSTS.some(
-    (entry) => host === entry || host.endsWith(`.${entry}`),
-  );
-}
-
 export interface SiteActivation {
   active: boolean;
-  /** True when the state came from `DEFAULT_OFF_HOSTS` rather than from the user. */
-  byDefault: boolean;
 }
 
+/** Resize is off everywhere until the user turns it on for that host. */
 export function resolveSiteActivation(hostname: string, overrides: SiteOverrides): SiteActivation {
-  const override = overrides[getSiteKey(hostname)];
-  if (typeof override === 'boolean') return { active: override, byDefault: false };
-  return { active: !isDefaultOffHost(hostname), byDefault: isDefaultOffHost(hostname) };
+  return { active: overrides[getSiteKey(hostname)] === true };
 }
 
 export interface SiteState {
@@ -116,17 +102,13 @@ export async function clearDimensions(hostname: string): Promise<void> {
   await browser.storage.local.set({ [SITE_DIMENSIONS_KEY]: all });
 }
 
-/**
- * Records an explicit choice. When the choice matches what the default would have
- * been anyway we drop the entry, so a site later added to or removed from
- * `DEFAULT_OFF_HOSTS` starts behaving correctly for people who never cared.
- */
+/** Off is the default for every site, so only an explicit "on" needs storing. */
 export async function setSiteEnabled(hostname: string, enabled: boolean): Promise<void> {
   const siteKey = getSiteKey(hostname);
   const all = await getSiteOverrides();
 
-  if (enabled === !isDefaultOffHost(hostname)) delete all[siteKey];
-  else all[siteKey] = enabled;
+  if (enabled) all[siteKey] = true;
+  else delete all[siteKey];
 
   await browser.storage.local.set({ [PER_SITE_OVERRIDES_KEY]: all });
 }

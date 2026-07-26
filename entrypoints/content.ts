@@ -33,7 +33,7 @@ export default defineContentScript({
     const hostname = window.location.hostname;
 
     let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
-    let activation: SiteActivation = { active: true, byDefault: false };
+    let activation: SiteActivation = { active: false };
     let persisted: StoredDimensions | null = null;
     let overlay: ResizeOverlay | null = null;
     let watcher: ReturnType<typeof observeVideoPlayers> | null = null;
@@ -191,7 +191,6 @@ export default defineContentScript({
         naturalHeight: player?.naturalHeight ?? 0,
         settings,
         activeHere: activation.active,
-        offByDefault: activation.byDefault,
         hostname,
       };
     }

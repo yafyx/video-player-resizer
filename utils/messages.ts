@@ -24,7 +24,5 @@ export interface PlayerState {
   settings: ExtensionSettings;
   /** Whether the overlay is running on this site. */
   activeHere: boolean;
-  /** True when that state came from the shipped default rather than the user. */
-  offByDefault: boolean;
   hostname: string;
 }

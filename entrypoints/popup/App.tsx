@@ -67,14 +67,7 @@ function SettingRow({
   );
 }
 
-/**
- * Sites with their own player sizing ship switched off, so the row has to say
- * that plainly -- an off toggle with no explanation reads as a bug.
- */
 function siteRowDescription(state: PlayerState, live: boolean): string {
-  if (state.offByDefault && !state.activeHere) {
-    return `Off by default here — ${state.hostname} has its own player controls`;
-  }
   if (!live) return 'Turn on to add drag handles to the player';
   if (state.playerCount > 1) {
     return `${state.playerCount} players detected — hover one to target it`;

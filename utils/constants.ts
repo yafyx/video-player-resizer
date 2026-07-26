@@ -113,71 +113,12 @@ export const SIZE_PRESETS: { label: string; scale: number }[] = [
   { label: '200%', scale: 2 },
 ];
 
-/**
- * Sites where the overlay is off until the user asks for it.
- *
- * These fall into two groups. Dedicated video services already have a good
- * answer for player size -- YouTube's theatre mode, Netflix's full-bleed player
- * -- so a second, competing resize affordance on top of their own controls is
- * just noise. Feeds and calls are the other group: a selection frame following
- * your pointer down an autoplaying timeline, or drawn over someone's face in a
- * meeting, is actively irritating.
- *
- * Matching covers subdomains, so `youtube.com` also disables `m.youtube.com`.
- * A per-site toggle in the popup overrides this in either direction.
- */
-export const DEFAULT_OFF_HOSTS: string[] = [
-  // Video services with their own sizing controls
-  'youtube.com',
-  'youtu.be',
-  'netflix.com',
-  'twitch.tv',
-  'primevideo.com',
-  'disneyplus.com',
-  'hulu.com',
-  'max.com',
-  'hbomax.com',
-  'peacocktv.com',
-  'paramountplus.com',
-  'crunchyroll.com',
-  'vimeo.com',
-  'dailymotion.com',
-  'bilibili.com',
-  'nicovideo.jp',
-  'iq.com',
-  'viu.com',
-  'vidio.com',
-  'plex.tv',
-  'spotify.com',
-
-  // Feeds, where a frame chasing the pointer is pure noise
-  'tiktok.com',
-  'instagram.com',
-  'facebook.com',
-  'x.com',
-  'twitter.com',
-  'reddit.com',
-  'threads.net',
-  'snapchat.com',
-  'linkedin.com',
-  'pinterest.com',
-
-  // Calls and conferencing
-  'meet.google.com',
-  'zoom.us',
-  'teams.microsoft.com',
-  'teams.live.com',
-  'discord.com',
-  'whereby.com',
-  'webex.com',
-];
-
 export const STORAGE_KEYS = {
   SETTINGS: 'settings',
   SITE_DIMENSIONS: 'siteDimensions',
   /**
-   * Tri-state per site: `true` the user turned it on, `false` the user turned it
-   * off, absent means fall back to `DEFAULT_OFF_HOSTS`.
+   * Per site: `true` means the user turned resize on for that host. Absent (or
+   * `false`) means off, which is the default for every site until asked for.
    */
   PER_SITE_OVERRIDES: 'perSiteOverrides',
 } as const;

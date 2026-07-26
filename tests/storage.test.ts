@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getSiteKey, isDefaultOffHost, resolveSiteActivation } from '../utils/storage';
+import { getSiteKey, resolveSiteActivation } from '../utils/storage';
 
 describe('getSiteKey', () => {
   it('treats www and the bare host as one site', () => {
@@ -12,52 +12,20 @@ describe('getSiteKey', () => {
   });
 });
 
-describe('isDefaultOffHost', () => {
-  it.each(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'])(
-    'covers %s via subdomain matching',
-    (host) => {
-      expect(isDefaultOffHost(host)).toBe(true);
-    },
-  );
-
-  it('does not match a host that merely ends with the same letters', () => {
-    expect(isDefaultOffHost('notyoutube.com')).toBe(false);
-    expect(isDefaultOffHost('youtube.com.evil.test')).toBe(false);
-  });
-
-  it('leaves ordinary sites on', () => {
-    expect(isDefaultOffHost('vlr.gg')).toBe(false);
-    expect(isDefaultOffHost('en.wikipedia.org')).toBe(false);
-  });
-});
-
 describe('resolveSiteActivation', () => {
-  it('runs by default on an ordinary site', () => {
-    expect(resolveSiteActivation('vlr.gg', {})).toEqual({ active: true, byDefault: false });
+  it('stays off by default on an ordinary site', () => {
+    expect(resolveSiteActivation('vlr.gg', {})).toEqual({ active: false });
   });
 
-  it('stays off on a site that ships disabled, and says so', () => {
-    expect(resolveSiteActivation('www.youtube.com', {})).toEqual({
-      active: false,
-      byDefault: true,
-    });
+  it('turns on once the user opts in', () => {
+    expect(resolveSiteActivation('www.vlr.gg', { 'vlr.gg': true })).toEqual({ active: true });
   });
 
-  it('lets the user switch a default-off site back on', () => {
-    expect(resolveSiteActivation('www.youtube.com', { 'youtube.com': true })).toEqual({
-      active: true,
-      byDefault: false,
-    });
-  });
-
-  it('lets the user switch an ordinary site off', () => {
-    expect(resolveSiteActivation('vlr.gg', { 'vlr.gg': false })).toEqual({
-      active: false,
-      byDefault: false,
-    });
+  it('stays off if the user explicitly opted out', () => {
+    expect(resolveSiteActivation('vlr.gg', { 'vlr.gg': false })).toEqual({ active: false });
   });
 
   it('keys overrides off the www-stripped host', () => {
-    expect(resolveSiteActivation('www.vlr.gg', { 'vlr.gg': false }).active).toBe(false);
+    expect(resolveSiteActivation('www.vlr.gg', { 'vlr.gg': true }).active).toBe(true);
   });
 });
