@@ -37,6 +37,8 @@ export interface ResizeOverlay {
   detach: () => void;
   /** Puts every player on the page back to its original size. */
   restoreAll: () => void;
+  /** Puts one player back, by its media element. Everything else keeps its size. */
+  restoreFor: (core: HTMLElement) => void;
   destroy: () => void;
   updateSettings: (settings: OverlaySettings) => void;
   setSize: (width: number, height: number) => void;
@@ -700,6 +702,22 @@ export function createResizeOverlay(
     syncRect();
   }
 
+  function restoreFor(core: HTMLElement): void {
+    const session = sessions.get(core);
+    if (!session) return;
+
+    session.restore();
+    sessions.delete(core);
+    naturals.delete(core);
+
+    // Dropping the session the active player is using leaves nothing to size
+    // through; the caller is on its way to `attach()`, which rebuilds both.
+    if (player?.core === core) {
+      sizing = null;
+      size = null;
+    }
+  }
+
   function destroy(): void {
     restoreAll();
     detach();
@@ -734,6 +752,7 @@ export function createResizeOverlay(
     attach,
     detach,
     restoreAll,
+    restoreFor,
     destroy,
     updateSettings(next: OverlaySettings) {
       settings = { ...next };

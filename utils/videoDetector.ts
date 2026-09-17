@@ -8,10 +8,16 @@ import {
   GENERIC_EMBED_MIN_WIDTH,
   MAX_TARGET_CLIMB,
   DEEP_QUERY_NODE_BUDGET,
-  OVERLAY_HOST_ID,
+  OWN_HOST_IDS,
 } from './constants';
 import { measureBox } from './sizing';
 import type { SizingChain } from './sizing';
+
+/**
+ * `element` only ever comes from a manual pick: the user chose a box that holds
+ * no `<video>` or `<iframe>` at all, so there is nothing to call a player.
+ */
+export type PlayerKind = 'video' | 'iframe' | 'element';
 
 export interface DetectedPlayer extends SizingChain {
   /** The element that actually renders the media: a `<video>` or a player `<iframe>`. */
@@ -21,7 +27,7 @@ export interface DetectedPlayer extends SizingChain {
   naturalHeight: number;
   /** Intrinsic ratio: `videoWidth/videoHeight` when known, else the measured box. */
   aspectRatio: number;
-  kind: 'video' | 'iframe';
+  kind: PlayerKind;
 }
 
 /** Ancestors that are never a sensible resize target, however tightly they fit. */
@@ -33,20 +39,36 @@ const TARGET_DENY_TAGS = new Set([
 // Traversal
 // ---------------------------------------------------------------------------
 
+/** Is this one of the hosts we injected? Its subtree is never page content. */
+export function isOwnHost(node: Node | null): boolean {
+  if (!(node instanceof Element)) return false;
+  return OWN_HOST_IDS.some((id) => node.id === id || node.closest?.(`#${id}`) !== null);
+}
+
 /**
- * Walk the document for `<video>` and `<iframe>` elements, descending into open
- * shadow roots and same-origin iframes. A plain `querySelectorAll` misses both,
- * which is why players inside web components or same-origin embeds never got
- * detected.
+ * Walk a tree for `<video>` and `<iframe>` elements, descending into open shadow
+ * roots and same-origin iframes. A plain `querySelectorAll` misses both, which is
+ * why players inside web components or same-origin embeds never got detected.
+ *
+ * Passing an element scopes the search to that subtree, which is how a manual
+ * pick finds the media inside whatever box the user chose.
  */
-export function collectMediaElements(root: Document | ShadowRoot = document): HTMLElement[] {
+export function collectMediaElements(
+  root: Document | ShadowRoot | HTMLElement = document,
+): HTMLElement[] {
   const found: HTMLElement[] = [];
-  const roots: (Document | ShadowRoot)[] = [root];
+  const roots: (Document | ShadowRoot | HTMLElement)[] = [root];
   let budget = DEEP_QUERY_NODE_BUDGET;
+
+  // A TreeWalker never yields its own root, so an element root has to be tested
+  // separately -- otherwise picking a bare <video> would find no media at all.
+  if (root instanceof HTMLElement && (root.tagName === 'VIDEO' || root.tagName === 'IFRAME')) {
+    found.push(root);
+  }
 
   while (roots.length > 0 && budget > 0) {
     const current = roots.shift()!;
-    // A ShadowRoot has an ownerDocument; a Document is its own factory.
+    // A ShadowRoot or element has an ownerDocument; a Document is its own factory.
     const doc: Document = current.ownerDocument ?? (current as Document);
     const walker = doc.createTreeWalker(current, NodeFilter.SHOW_ELEMENT);
 
@@ -54,8 +76,8 @@ export function collectMediaElements(root: Document | ShadowRoot = document): HT
     while (node && budget-- > 0) {
       const el = node as HTMLElement;
 
-      if (el.id === OVERLAY_HOST_ID) {
-        // Our own overlay -- skip its entire subtree.
+      if (OWN_HOST_IDS.includes(el.id)) {
+        // Our own overlay or picker -- skip its entire subtree.
         node = skipSubtree(walker, el);
         continue;
       }
@@ -287,6 +309,66 @@ export function describePlayer(core: HTMLElement): DetectedPlayer {
 }
 
 // ---------------------------------------------------------------------------
+// Manual targets
+// ---------------------------------------------------------------------------
+
+/**
+ * Best media element inside `root`. Falls back to the first one found when every
+ * candidate scores zero -- a player the user pointed at by hand is worth sizing
+ * even if it is currently tiny, off-screen, or an iframe we do not recognise.
+ */
+export function findMediaWithin(root: HTMLElement): HTMLElement | null {
+  const media = collectMediaElements(root);
+  if (media.length === 0) return null;
+
+  let best: HTMLElement | null = null;
+  let bestScore = 0;
+
+  for (const el of media) {
+    const score = scoreCandidate(el);
+    if (score > bestScore) {
+      best = el;
+      bestScore = score;
+    }
+  }
+
+  return best ?? media[0];
+}
+
+/** Elements between `core` and `target`, outermost first, as `apply()` wants. */
+function chainBetween(core: HTMLElement, target: HTMLElement): HTMLElement[] {
+  if (core === target) return [];
+  const path = ancestorPath(core);
+  const index = path.indexOf(target);
+  // A core outside the target means the two came from different trees; sizing
+  // just the core is the safe reading.
+  return index < 0 ? [core] : path.slice(0, index).reverse();
+}
+
+/**
+ * Describe an element the user picked by hand.
+ *
+ * Unlike `describePlayer` this does *not* climb: the whole point of picking is
+ * that the user, not `resolveChain`, decides which box gets the pixels. We only
+ * look downward, for media to carry the size through to.
+ */
+export function describeElementTarget(target: HTMLElement): DetectedPlayer {
+  const core = findMediaWithin(target) ?? target;
+  const box = measureBox(target);
+
+  return {
+    target,
+    descendants: chainBetween(core, target),
+    core,
+    naturalWidth: box.width,
+    naturalHeight: box.height,
+    aspectRatio: intrinsicRatio(core, box),
+    kind:
+      core.tagName === 'VIDEO' ? 'video' : core.tagName === 'IFRAME' ? 'iframe' : 'element',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Public detection API
 // ---------------------------------------------------------------------------
 
@@ -320,6 +402,13 @@ export interface PlayerObserverHandlers {
   onChange: (player: DetectedPlayer) => void;
   /** The active media element left the DOM. */
   onLost: () => void;
+  /**
+   * The DOM changed enough to warrant a re-scan, before we look at what changed.
+   * A page with no players at all fires neither of the other two, so this is the
+   * only hook that sees every mutation -- which is what a manually picked
+   * non-media target needs to notice it has been re-rendered away.
+   */
+  onScan?: () => void;
 }
 
 /**
@@ -341,6 +430,7 @@ export function observeVideoPlayers(handlers: PlayerObserverHandlers): {
 
   function run(): void {
     if (stopped) return;
+    handlers.onScan?.();
 
     if (active && !active.core.isConnected) {
       active = null;
@@ -365,12 +455,9 @@ export function observeVideoPlayers(handlers: PlayerObserverHandlers): {
   }
 
   const observer = new MutationObserver((records) => {
-    // Ignore anything our own overlay did.
+    // Ignore anything our own overlay or picker did.
     for (const record of records) {
-      const node = record.target as HTMLElement;
-      if (node?.nodeType === 1 && (node.id === OVERLAY_HOST_ID || node.closest?.(`#${OVERLAY_HOST_ID}`))) {
-        continue;
-      }
+      if (isOwnHost(record.target)) continue;
       schedule();
       return;
     }

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Resizer · Basic</title>
+    <style>
+      :root { color-scheme: light; background: #f5f1e8; }
+      html, body { min-height: 100%; margin: 0; }
+      body { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #f5f1e8; }
+      video { display: block; width: min(100%, 720px); aspect-ratio: 16 / 9; border-radius: 12px; background: #152027; object-fit: cover; }
+      video:focus-visible { outline: 3px solid #5d91b3; outline-offset: 4px; }
+    </style>
+  </head>
+  <body>
+    <video controls muted loop playsinline preload="metadata" aria-label="Flower video">
+      <source src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4" type="video/mp4">
+    </video>
+  </body>
+</html>

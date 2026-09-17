@@ -102,6 +102,13 @@ export const MAX_TARGET_CLIMB = 6;
 /** How far up we look for clipping ancestors when the player outgrows its column. */
 export const MAX_OVERFLOW_CLIMB = 8;
 
+/**
+ * How far the manual picker will climb from the element under the cursor. Higher
+ * than `MAX_TARGET_CLIMB` because the user is steering: automatic climbing has to
+ * be conservative, a person pressing `]` does not.
+ */
+export const MAX_PICK_CLIMB = 12;
+
 /** Node budget for the shadow-DOM-piercing document walk. */
 export const DEEP_QUERY_NODE_BUDGET = 25_000;
 
@@ -121,6 +128,8 @@ export const STORAGE_KEYS = {
    * `false`) means off, which is the default for every site until asked for.
    */
   PER_SITE_OVERRIDES: 'perSiteOverrides',
+  /** Per site: the element the user chose by hand, instead of the detected one. */
+  SITE_PICKS: 'sitePicks',
 } as const;
 
 export const DEFAULT_SETTINGS = {
@@ -134,8 +143,24 @@ export const DEFAULT_SETTINGS = {
   rememberSize: true,
 } as const;
 
-/** Overlay accent, shared with the popup so both read as one product. */
+/** Fallback accent for injected controls when a site-specific theme is unavailable. */
 export const ACCENT = '#3d8bff';
 
 /** Id of the overlay root we append to <html>. Also used to ignore our own mutations. */
 export const OVERLAY_HOST_ID = 'video-resizer-overlay-root';
+
+/** Id of the element-picker root. Separate host so the two can be shown independently. */
+export const PICKER_HOST_ID = 'video-resizer-picker-root';
+
+/** Id of the in-page control bar opened from the extension action. */
+export const TOOLBAR_HOST_ID = 'video-resizer-toolbar-root';
+
+/**
+ * Everything we inject into the page. Detection, hit-testing, and the mutation
+ * guard all skip these, so the extension never reacts to its own DOM.
+ */
+export const OWN_HOST_IDS: readonly string[] = [
+  OVERLAY_HOST_ID,
+  PICKER_HOST_ID,
+  TOOLBAR_HOST_ID,
+];

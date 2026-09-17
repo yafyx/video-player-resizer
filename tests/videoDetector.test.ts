@@ -7,6 +7,8 @@ import {
   collectMediaElements,
   observeVideoPlayers,
   detectVideoPlayer,
+  findMediaWithin,
+  describeElementTarget,
 } from '../utils/videoDetector';
 import { stubRect } from './helpers';
 
@@ -278,5 +280,127 @@ describe('detectVideoPlayer', () => {
     expect(player?.kind).toBe('video');
     expect(player?.naturalWidth).toBe(640);
     expect(player?.aspectRatio).toBeCloseTo(16 / 9, 5);
+  });
+});
+
+describe('findMediaWithin', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('finds the media element inside a wrapper', () => {
+    const wrap = document.createElement('div');
+    const el = video({ width: 1280, height: 720 });
+    wrap.appendChild(el);
+    document.body.appendChild(wrap);
+
+    expect(findMediaWithin(wrap)).toBe(el);
+  });
+
+  it('accepts the element itself when it is the media', () => {
+    const el = video({ width: 1280, height: 720 });
+    document.body.appendChild(el);
+
+    expect(findMediaWithin(el)).toBe(el);
+  });
+
+  it('takes the best-scoring player when a wrapper holds several', () => {
+    const wrap = document.createElement('div');
+    const small = video({ width: 320, height: 180 });
+    const big = video({ width: 1280, height: 720 });
+    wrap.append(small, big);
+    document.body.appendChild(wrap);
+
+    expect(findMediaWithin(wrap)).toBe(big);
+  });
+
+  it('still returns a player the scorer rejects, since the user pointed at it', () => {
+    const wrap = document.createElement('div');
+    // Below MIN_CANDIDATE_WIDTH, so `scoreCandidate` gives it zero.
+    const tiny = video({ width: 60, height: 40 });
+    wrap.appendChild(tiny);
+    document.body.appendChild(wrap);
+
+    expect(findMediaWithin(tiny)).toBe(tiny);
+    expect(findMediaWithin(wrap)).toBe(tiny);
+  });
+
+  it('returns null for a box with no media in it', () => {
+    const wrap = document.createElement('div');
+    wrap.appendChild(document.createElement('p'));
+    document.body.appendChild(wrap);
+
+    expect(findMediaWithin(wrap)).toBeNull();
+  });
+});
+
+describe('describeElementTarget', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('sizes exactly the element handed to it, however loosely it wraps', () => {
+    const column = document.createElement('div');
+    const el = video({ width: 640, height: 360 });
+    // A column far wider than the player: `resolveChain` would refuse to climb
+    // here, which is the whole reason a manual pick exists.
+    stubRect(column, { width: 1600, height: 900 });
+    column.appendChild(el);
+    document.body.appendChild(column);
+
+    const player = describeElementTarget(column);
+
+    expect(player.target).toBe(column);
+    expect(player.naturalWidth).toBe(1600);
+    expect(player.naturalHeight).toBe(900);
+  });
+
+  it('carries the size down to the media through every element between', () => {
+    const outer = document.createElement('div');
+    const inner = document.createElement('div');
+    const el = video({ width: 640, height: 360 });
+    stubRect(outer, { width: 1600, height: 900 });
+    stubRect(inner, { width: 800, height: 450 });
+    inner.appendChild(el);
+    outer.appendChild(inner);
+    document.body.appendChild(outer);
+
+    const player = describeElementTarget(outer);
+
+    expect(player.core).toBe(el);
+    // Outermost first, target excluded -- the order `apply()` walks.
+    expect(player.descendants).toEqual([inner, el]);
+  });
+
+  it('takes the intrinsic ratio from the video, not from the box picked', () => {
+    const wrap = document.createElement('div');
+    const el = video({ width: 640, height: 360 });
+    Object.defineProperty(el, 'videoWidth', { value: 1920 });
+    Object.defineProperty(el, 'videoHeight', { value: 1080 });
+    stubRect(wrap, { width: 1000, height: 200 });
+    wrap.appendChild(el);
+    document.body.appendChild(wrap);
+
+    expect(describeElementTarget(wrap).aspectRatio).toBeCloseTo(16 / 9, 5);
+  });
+
+  it('reports a box holding no media as an element, with no descendants', () => {
+    const wrap = document.createElement('div');
+    stubRect(wrap, { width: 500, height: 300 });
+    document.body.appendChild(wrap);
+
+    const player = describeElementTarget(wrap);
+
+    expect(player.kind).toBe('element');
+    expect(player.core).toBe(wrap);
+    expect(player.descendants).toEqual([]);
+    expect(player.aspectRatio).toBeCloseTo(500 / 300, 5);
+  });
+
+  it('names an iframe target for what it is', () => {
+    const el = iframe('https://www.youtube.com/embed/abc', { width: 800, height: 450 });
+    document.body.appendChild(el);
+
+    expect(describeElementTarget(el).kind).toBe('iframe');
   });
 });
