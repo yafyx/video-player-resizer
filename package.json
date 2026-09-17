@@ -4,6 +4,15 @@
   "private": true,
   "version": "1.1.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yafyx/video-player-resizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yafyx/video-player-resizer/issues"
+  },
+  "homepage": "https://github.com/yafyx/video-player-resizer",
+  "license": "MIT",
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
