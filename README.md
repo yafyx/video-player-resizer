@@ -1,125 +1,95 @@
+[English](README.md) | [中文](README.zh.md)
+
 # Video Player Resizer
 
-A browser extension that puts drag handles on the video on any page and resizes
-the media element itself, so the change actually sticks.
+The video is the wrong size. Fix the player, not the page.
 
-```bash
-bun install
-bun run dev        # loads an unpacked build into a fresh browser profile
-bun run test
-bun run compile    # tsc --noEmit
-bun run build
-bun run verify:release
-bun run package:chrome  # writes the uploadable ZIP under .output/
-```
+## Why this?
 
-The release gate checks the generated Manifest V3 package, icon dimensions,
-permission surface, store artwork dimensions, and starter-file cleanup before
-the Chrome ZIP is produced. See [STORE_LISTING.md](STORE_LISTING.md) for the
-listing copy, privacy disclosures, test instructions, and the final dashboard
-fields that still need a public support URL and privacy-policy URL.
+Every workaround fixes the wrong thing. Browser zoom scales the text, the chat, the sidebar, everything except your actual complaint. Fullscreen hides the thing you were reading alongside. DevTools works for eleven seconds: you set `width` on the `<video>`, the page shrugs, and on reload it's gone.
 
-For manual testing, open any standalone HTML file under `examples/` from a
-local HTTP server, then enable the current site in the extension.
+The root cause is unglamorous. The box you see is usually not the `<video>`. It's a wrapper: an absolutely-positioned iframe inside a padding-hacked container, a utility class pinning `width: 100%`, a `max-width` clamp, an `aspect-ratio` box. Set `height` on the iframe and nothing moves. That's not a bug in your CSS skills. The control lives one or two ancestors up, and nobody tells you which one.
+
+So this extension stops asking you to find it. It resolves the sizing chain (the outermost ancestor that still tightly wraps the player, plus everything between it and the media element) and writes the size where it actually takes effect.
+
+## What it is
+
+A Manifest V3 browser extension (WXT, MIT licensed) that puts Figma-style drag handles on any web video and resizes the player itself. One permission: `storage`. No host permissions block, no popup window, no account, no analytics. Off on every site until you enable it there.
+
+- Drag any edge or corner to resize the player in place
+- Works on `<video>` and embedded player `<iframe>`s, including cross-origin ones
+- Manual pick when detection guesses wrong, remembered per site
+- Remembers sizes per site, restores the page byte-for-byte on reset
+
+## Key features
+
+- **It resizes the box that matters, not the tag you clicked.** Most tools set `width` on the `<video>` and lose to the wrapper. This climbs to the ancestor that actually controls the rendered box and sizes the whole chain. A padding-ratio embed that ignores `height` on the iframe finally moves.
+- **Iframe players work because the overlay never lives inside them.** An `<iframe>` can hold child nodes without rendering them, so DOM injected into the player is invisible. The overlay is a shadow-DOM frame on `<html>` tracking the player's rect, and a full-viewport shield goes up mid-drag so a cross-origin frame can't swallow your pointer events.
+- **When detection is wrong, you point.** Hover-and-click picker with `[` / `]` to widen to the parent or narrow back down. Your choice becomes an element path (`:nth-child()` segments, id-anchored, split at shadow boundaries), retried on a 250 to 4000ms ladder for late renders, restored per site. If the path stops resolving, it falls back to detection instead of guessing.
+- **Sizes stick without wrecking the page.** Every write uses `!important` and neutralizes the four real overrides: `width: 100%` utilities, `max-width` clamps, `aspect-ratio` / `padding-bottom` ratio boxes, clipping ancestors. Each displaced inline value is recorded, so reset returns the page exactly.
+- **It looks like the site, not a widget bolted on.** The frame borrows the page accent (`theme-color` → brand custom properties → link color), normalized in OKLCH so hue survives while lightness stays legible over letterbox black and sky white. Muted brands get floored chroma instead of reading as grey.
+
+## With / without
+
+|                         | Without                                    | With                                             |
+| ----------------------- | ------------------------------------------ | ------------------------------------------------ |
+| Too-small lecture video | Zoom the whole page or go fullscreen       | Drag the corner; the article stays put           |
+| Embedded player         | DevTools edit on the iframe, nothing moves | Sizing chain finds the wrapper that owns the box |
+| Wrong video of three    | Re-hover and hope                          | Target list + manual pick, pinned per site       |
+| Next visit              | Resize again from scratch                  | Per-site size re-applied automatically           |
+| Page after reset        | Leftover inline styles                     | Displaced values restored exactly                |
+| Privacy cost            | Accounts, sync servers, analytics          | `storage` only; everything stays in the browser  |
 
 ## How it works
 
-Three layers, each solving a different half of "resize the video".
+Three ideas do the heavy lifting.
 
-**`utils/videoDetector.ts` — finding the player.** Walks the document for
-`<video>` elements and player `<iframe>`s, descending into open shadow roots and
-same-origin subframes, then scores each candidate by area, how much of it is on
-screen, and whether it is actually playing. Known embed hosts outrank anonymous
-iframes so an ad slot never wins. Once a media element is chosen it resolves a
-*sizing chain*: the outermost ancestor that still tightly wraps the player, plus
-every element between that ancestor and the media element.
+### Find the box that actually controls the size
 
-The chain matters because the visible box is often not the `<video>`. A
-responsive embed is usually an absolutely-positioned iframe inside a wrapper
-whose height is made entirely of percentage padding — set `height` on the iframe
-and nothing moves.
+The visible player is usually a wrapper, not the media tag: a padding-hacked container, a `width: 100%` utility, a ratio box. The extension scores candidates by area, on-screen share, and playing state (embeds outrank ads), then climbs to the ancestor that owns the rendered box and sizes the whole chain. Late layout shifts settle before the natural size is remembered; hovering another video retargets unless you've pinned a manual pick.
 
-**`utils/sizing.ts` — making the size stick.** Writes every property with
-`!important` and neutralises the four things real pages use to override an
-explicit box: utility classes pinning `width: 100%`, `max-width` clamps,
-intrinsic-ratio boxes (`aspect-ratio` and the `padding-bottom: 56.25%` hack), and
-clipping ancestors that would cut off a player grown past its column. Every
-displaced inline value is recorded so reset puts the page back exactly.
+### Write where the page can't ignore it
 
-**`utils/resize.ts` — the overlay.** A fixed, shadow-DOM overlay appended to
-`<html>` that tracks the player's bounding rect, rather than DOM injected into
-the player. That is what makes iframe players work at all: an `<iframe>` can hold
-child nodes but never renders them. During a drag a full-viewport shield goes up,
-because the pointer crossing into a cross-origin player frame otherwise kills the
-gesture — that frame's document swallows the move events.
+Real pages fight back four ways: pinned widths, `max-width` clamps, ratio boxes, clipping ancestors. Every write goes out at top priority with those neutralized, and each displaced value is recorded so reset restores the page exactly. Drags, `Shift` / `Alt` modifiers, `Esc` cancel, double-click reset, and arrow-key nudges all funnel through that same write-and-record path.
 
-**`utils/picker.ts` + `utils/elementPath.ts` — overriding all of that.** Detection
-is a heuristic, and on a page it reads wrongly there is no argument to be had with
-it — you can see the box you want. The picker is a modal hover-and-click mode that
-highlights whatever is under the cursor and hands that element straight to the
-sizing chain, skipping the climb entirely. `elementPath.ts` turns the choice into
-a string — `:nth-child()` segments, anchored on an id where a stable-looking one
-exists, split at every shadow boundary — so it can be restored on the next visit.
-Restoring is best-effort by design: the moment a path stops resolving, the
-extension falls back to automatic detection rather than guessing.
+### Stay out of the page's way
 
-**`utils/theme.ts` — borrowing the site's palette.** The frame takes its colour
-from the page: `<meta name="theme-color">`, then conventional brand custom
-properties (`--accent`, `--primary`, `--brand`, …), then the colour most of the
-page's links share. Nothing is used raw — a brand colour is picked to sit on that
-site's background, not on an arbitrary frame of video. Everything is normalised
-in OKLCH so the hue, the part that actually carries the brand, survives untouched
-while lightness is pulled into a legible band and chroma is floored so a muted
-brand doesn't read as grey. Chroma-only gamut clamping keeps the hue intact on
-the way back to sRGB.
+The overlay floats outside the player, so cross-origin iframes work and page scripts can't trip over it. Detection is a heuristic, so a click-to-pick fallback is built in: your choice is remembered per site, retried against late renders, and dropped back to automatic when the page stops matching. Off everywhere until you opt a site in; settings sync, measured sizes stay local.
 
-## Off until you ask for it
+### Design decisions
 
-Resize ships switched **off** on every site. Hovering a player does nothing
-until you click the extension icon and choose **Enable here** in the top-right
-toolbar — after that it stays on for that host. That also keeps it out of the
-way on sites with their own sizing controls (YouTube, Netflix, Twitch, …) and
-on feeds and video calls, without needing a special case for any of them.
+| Choice                                    | Why                                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Overlay outside the player, not inside it | Injected DOM never renders inside an iframe; tracking the rect from outside works everywhere                          |
+| Priority writes + displaced-value journal | Plain inline styles lose to utility classes; the journal makes reset exact instead of "close enough"                  |
+| Off by default, per-site opt-in           | Video sites, calls, and feeds all have their own layout opinions; no blocklist covers them, a default-off switch does |
+| Page-less action (no popup)               | The controls live in the page; the toolbar icon just toggles them                                                     |
+| No host permissions, no analytics         | Detection runs locally; the only permission is `storage`                                                              |
 
-## Using it
+## Quick start
 
-Hover a player to reveal its handles, then drag any edge or corner. The frame
-follows Figma's selection model: a hairline outline, four small corner squares,
-and invisible edge strips where the cursor does the signalling.
+**Use it (4 steps):**
 
-| Input | Effect |
-| --- | --- |
-| Drag a handle | Resize |
-| <kbd>Shift</kbd> while dragging | Invert the aspect-ratio lock |
-| <kbd>Alt</kbd> while dragging | Disable snapping |
-| <kbd>Esc</kbd> while dragging | Cancel, back to the pre-drag size |
-| Double-click a handle | Back to the original size |
-| Focus a handle, arrow keys | Resize in 24px steps (<kbd>Shift</kbd> for 4px) |
-| Hover a different video | Retarget the overlay to it |
+1. Install the unpacked build (`bun run dev`) or the store ZIP, open any page with video.
+2. Click the toolbar icon → **Enable here**. The overlay appears on hover from now on for this host.
+3. Drag a handle. `Shift` inverts aspect lock, `Alt` disables snapping, double-click resets.
+4. Wrong box? Open **More** → **Select element**, click the right box. **Use automatic** hands it back.
 
-Sizes are remembered per site and re-applied on the next visit. Use the
-attached **More below** control to open the control deck with scale
-presets, target choices, and toggles for aspect lock, overflow, and size memory.
+**Develop:**
 
-## Choosing the target yourself
+```bash
+bun install
+bun run dev        # unpacked build in a fresh profile
+bun run test       # 8 suites: detector, sizing, overlay, picker, toolbar, theme, storage, paths
+bun run compile    # tsc --noEmit
+bun run build
+bun run verify:release  # tests + compile + build + store-package checks
+```
 
-Detection wins most of the time and loses noisily when it doesn't: it grabs the
-wrapper instead of the player, picks the wrong video of three, or scores the real
-one too low to find at all. The toolbar's **Target** row is the way out of each.
+Manual cases live under `examples/`: serve over local HTTP, enable the host, drag. `bun run package:chrome` writes the uploadable ZIP under `.output/`.
 
-**Select element** enters the picker: the toolbar steps aside, every box you
-hover is highlighted and named, and clicking one makes it the thing that gets
-resized — including wrappers the automatic climb would never reach. The toolbar
-returns after the choice. Any page with more than one detected player lists them
-in the Target row, so switching is a click rather than a hover in the right place.
+That said, it won't fix sites that re-assert layout every frame, and a same-origin subframe pick can't be addressed on revisit (it still works for the session). Detection is a heuristic; the picker is the honest fallback, not a failure mode.
 
-| Input | Effect |
-| --- | --- |
-| Move the pointer | Highlight the element under it |
-| <kbd>[</kbd> / <kbd>]</kbd> | Widen to the parent, narrow back down |
-| Click or <kbd>Enter</kbd> | Resize this element from now on |
-| <kbd>Esc</kbd> or right-click | Cancel |
+## License
 
-A manual choice is remembered per site and pins the overlay: hovering another
-video no longer steals it. **Use automatic** puts that element back to its
-original size and hands the decision back to detection.
+MIT, see [LICENSE](LICENSE). Privacy details: [PRIVACY.md](PRIVACY.md).
