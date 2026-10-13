@@ -4,6 +4,11 @@
 
 The video is the wrong size. Fix the player, not the page.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/figures/video-resizer-figure-dark.png">
+  <img src="assets/figures/video-resizer-figure-light.png" alt="Isometric illustration: a studio display showing a web page with three videos. The attached video carries the overlay — a corner handle at each corner and a badge reading 1920 × 1080 — while the other detected players wait smaller in the page's margin." width="760">
+</picture>
+
 ## Why this?
 
 Every workaround fixes the wrong thing. Browser zoom scales the text, the chat, the sidebar, everything except your actual complaint. Fullscreen hides the thing you were reading alongside. DevTools works for eleven seconds: you set `width` on the `<video>`, the page shrugs, and on reload it's gone.

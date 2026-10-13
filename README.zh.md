@@ -6,6 +6,11 @@
 
 视频太小，别折腾整个页面，直接改播放器本身。
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/figures/video-resizer-figure-dark.png">
+  <img src="assets/figures/video-resizer-figure-light.png" alt="等距插画：一台显示器上是一个网页，页面里有三个视频。被接管的视频带四角拖拽手柄和 1920 × 1080 尺寸标签，探测到的其他播放器缩小排在页面边栏。" width="760">
+</picture>
+
 ## 为什么做这个
 
 常见的办法都打偏了。浏览器缩放连文字带侧栏一起放大，偏偏你想看的视频没大多少。全屏又把旁边对照着看的内容藏起来了。DevTools 更短命：在 `<video>` 上改个 `width`，页面不认，刷新就没。
